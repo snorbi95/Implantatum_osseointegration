@@ -24,87 +24,33 @@ from skimage.filters import rank
 from skimage.morphology import disk
 from skimage.segmentation import watershed
 from skimage.metrics import structural_similarity as ssim
+from skimage.transform import rescale
+from colorthief import ColorThief
 
 curr_image_name = ''
 mask_image = 0
 map_image = 0
 map_edge_image = 0
+gray_image = 0
+segmented_rgb = 0
 fill_types = {'implant': 255, 'bone': 127, 'other': 192, 'background': 63}
 fill_types_rgb = {'implant': [255,255,0], 'bone': [255,0,0], 'other': [0,0,255], 'background': [0,0,0]}
 x_coord = 0
 y_coord = 0
 
 
-def get_binary_image(edges):
-    mask_size = 25
-    res = np.zeros_like(edges)
-    for i in range(mask_size // 2, edges.shape[0] - mask_size // 2 , mask_size):
-        for j in range(mask_size // 2, edges.shape[1] - mask_size // 2, mask_size):
-            act_mtx = edges[i - (mask_size // 2):i + 1 + (mask_size // 2),
-                          j - (mask_size // 2):j + 1 + (mask_size // 2)]
-            act_mtx = np.reshape(act_mtx, (mask_size * mask_size, 1))
-            trues = act_mtx[act_mtx == True].size
-            if trues > (mask_size * mask_size) * 0.25:
-                res[i - (mask_size // 2):i + 1 + (mask_size // 2),
-                j - (mask_size // 2):j + 1 + (mask_size // 2)] = 1
-            # else:
-            #     edges[i - (mask_size // 2):i + 1 + (mask_size // 2),
-            #     j - (mask_size // 2):j + 1 + (mask_size // 2)] = 0
-
-    res = morphology.opening(res, selem=morphology.square(25))
-    # plt.imshow(res)
-    # plt.show()
-    return res
-
-def delete_small_regions(bin_image, mask_size = 25, step_size = 1):
+def delete_small_regions(bin_image, mask_size = 45, step_size = 25):
     for i in range(mask_size // 2, bin_image.shape[0] - mask_size // 2, step_size):
         for j in range(mask_size // 2, bin_image.shape[1] - mask_size // 2, step_size):
             act_mtx = bin_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
                       j - (mask_size // 2):j + 1 + (mask_size // 2)]
-            if np.sum(act_mtx[0,:]) == 0 and np.sum(act_mtx[-1,:]) == 0 and np.sum(act_mtx[:,0]) == 0 and np.sum(act_mtx[:,-1]) == 0:
-                act_mtx = 0
+            if (np.sum(act_mtx[0,:]) == 0 and np.sum(act_mtx[-1,:]) == 0 and np.sum(act_mtx[:,0]) == 0 and np.sum(act_mtx[:,-1]) == 0)\
+                    or act_mtx[act_mtx == 1].size < (mask_size * mask_size) * 0.25:
+                act_mtx = np.zeros_like(act_mtx)
             bin_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
             j - (mask_size // 2):j + 1 + (mask_size // 2)] = act_mtx
     return bin_image
 
-def get_binary_image_from_sobel(edges, mask_size, step_size):
-    print('Binary image....')
-    res = np.zeros_like(edges)
-    avg = np.mean(edges)
-    print(f'Average edge size: {avg}')
-    for i in range(mask_size // 2, edges.shape[0] - mask_size // 2, step_size):
-        for j in range(mask_size // 2, edges.shape[1] - mask_size // 2, step_size):
-            act_mtx = edges[i - (mask_size // 2):i + 1 + (mask_size // 2),
-                          j - (mask_size // 2):j + 1 + (mask_size // 2)]
-            act_mtx = np.reshape(act_mtx, (mask_size * mask_size, 1))
-            above_avg = act_mtx[act_mtx > avg].size
-            if above_avg > (mask_size * mask_size) * 0.65:
-                res[i - (mask_size // 2):i + 1 + (mask_size // 2),
-                j - (mask_size // 2):j + 1 + (mask_size // 2)] = 1
-            # else:
-            #     edges[i - (mask_size // 2):i + 1 + (mask_size // 2),
-            #     j - (mask_size // 2):j + 1 + (mask_size // 2)] = 0
-
-    # plt.imshow(res)
-    # plt.show()
-    res = morphology.closing(res, selem=morphology.square(mask_size))
-    #res = delete_small_regions(res, mask_size = 75, step_size=35)
-    #res = morphology.erosion(res, selem=morphology.square(mask_size))
-    # plt.imshow(res)
-    # plt.show()
-    return res
-
-def get_max_len_list(li):
-    # max_len = 0
-    # max_list = []
-    # for item in li:
-    #     if item.shape[0] > max_len:
-    #         max_len = item.shape[0]
-    #         max_list = item
-    # return max_list
-    len_and_list = [(item.shape[0], item) for item in li]
-    len_and_list = sorted(len_and_list, key=lambda x:x[0], reverse=True)
-    return len_and_list[0]
 
 def km_clust(array, n_clusters):
     X = array.reshape((-1, 1))
@@ -129,57 +75,6 @@ def get_cluster(k,img):
 from scipy.spatial import ConvexHull
 from PIL import Image, ImageDraw
 
-def get_contour(bin_image):
-    print('Contour image....')
-    contours = measure.find_contours(bin_image, level=0.8, fully_connected='low')
-    # fig, ax = plt.subplots()
-    bin_image = ndimage.binary_fill_holes(bin_image)
-    #plt.imshow(bin_image, cmap=plt.cm.gray)
-    #print(contours)
-    max_contour = get_max_len_list(contours)
-    #plt.plot(contours[:, 1], contours[:, 0], linewidth=2)
-    #plt.show()
-    res_image = np.zeros_like(bin_image)
-    contour = max_contour[1].astype(np.uint32)
-    res_image[contour[:,0], contour[:,1]] = 255
-    res_image = ndimage.binary_fill_holes(res_image)
-    #plt.imshow(res_image)
-    # plt.show()
-    seeds = (np.where(res_image == 1)[0], np.where(res_image == 1)[1])
-    start_x = np.min(seeds[0])
-    start_y = np.min(seeds[1])
-    end_x = np.max(seeds[0])
-    end_y = np.max(seeds[1])
-    for contour in contours:
-        if np.max(contour[:,0]) < end_x and np.min(contour[:,0]) > start_x and np.max(contour[:,1]) < end_y and np.min(contour[:,1]) > start_y and len(contour[0]) > 50:
-            contour = contour.astype(np.uint32)
-            #plt.plot(contour[:, 1], contour[:, 0], linewidth=2)
-            res_image[contour[:, 0], contour[:, 1]] = 255
-    #res_image = ndimage.binary_fill_holes(res_image)
-    res_image = morphology.closing(res_image, selem = morphology.square(35))
-    res_image = ndimage.binary_fill_holes(res_image)
-    seeds = (np.where(res_image == 1)[0], np.where(res_image == 1)[1])
-    #res_image = morphology.convex_hull_image(res_image)
-    start_x = np.min(seeds[0])
-    start_y = np.min(seeds[1])
-    end_x = np.max(seeds[0])
-    end_y = np.max(seeds[1])
-    # res_image[start_x:end_x, start_y: end_y] = bin_image[start_x:end_x, start_y: end_y]
-    # plt.imshow(bin_image)
-    # plt.show()
-    # plt.imshow(points_image)
-    # plt.show()
-    #res_image = morphology.flood(res_image, seed)
-    #res_image = morphology.convex_hull_image(res_image)
-    #plt.imsave('Points images/' + image_name, points_image, cmap='gray')
-    # ax.axis('image')
-    # ax.set_xticks([])
-    # ax.set_yticks([])
-    # res_image = morphology.convex_hull_image(res_image)
-    # plt.imshow(res_image)
-    # plt.show()
-
-    return res_image, [start_x, end_x, start_y, end_y]
 
 def smooth_map_image(map_image):
     mask_size = 5
@@ -254,20 +149,76 @@ def flood_fill_iterative(coords, type):
 
 
 def fill_bone_regions():
-    mask_size = 15
-    for i in range(mask_size // 2, map_edge_image.shape[0] - mask_size // 2):
-        for j in range(mask_size // 2, map_edge_image.shape[1] - mask_size // 2):
+    map_flatten = np.reshape(map_edge_image,(map_edge_image.shape[0] * map_edge_image.shape[1],1))
+    map_flatten = map_flatten[map_flatten != 0]
+    global_avg = np.mean(map_flatten)
+    global_std = np.std(map_edge_image)
+    # plt.imshow(gray_image)
+    # plt.show()
+    mask_size = 25
+    for i in range(mask_size // 2, map_edge_image.shape[0] - mask_size // 2,2):
+        for j in range(mask_size // 2, map_edge_image.shape[1] - mask_size // 2,2):
             act_mtx = map_edge_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
                       j - (mask_size // 2):j + 1 + (mask_size // 2)]
             act_mtx = np.reshape(act_mtx, (mask_size * mask_size, 1))
+            act_gray = gray_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+                      j - (mask_size // 2):j + 1 + (mask_size // 2)]
             act_mtx = act_mtx[act_mtx != 0]
             avg = np.mean(act_mtx)
-            if avg < 0.075 or avg > 0.25:
+            if (avg < 0.015 or avg > 0.35):
+            #if np.mean(act_gray) > 0.875:
                 tmp = mask_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
                       j - (mask_size // 2):j + 1 + (mask_size // 2)]
                 tmp[tmp == 0] = fill_types['bone']
                 mask_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
                 j - (mask_size // 2):j + 1 + (mask_size // 2)] = tmp
+    # mask_size = 9
+    # for i in range(mask_size // 2, map_edge_image.shape[0] - mask_size // 2):
+    #     for j in range(mask_size // 2, map_edge_image.shape[1] - mask_size // 2):
+    #         act_mtx = map_edge_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+    #                   j - (mask_size // 2):j + 1 + (mask_size // 2)]
+    #         act_mtx = np.reshape(act_mtx, (mask_size * mask_size, 1))
+    #         expanded_act_mtx = mask_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+    #                   j - (mask_size // 2):j + 1 + (mask_size // 2)]
+    #         expanded_act_mtx = np.reshape(expanded_act_mtx, (mask_size * mask_size, 1))
+    #         other_num = expanded_act_mtx[expanded_act_mtx == fill_types['other']].size
+    #         #act_mtx = act_mtx[act_mtx != 0]
+    #         avg = np.mean(act_mtx)
+    #         if avg <0.075:
+    #             tmp = mask_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+    #                   j - (mask_size // 2):j + 1 + (mask_size // 2)]
+    #             tmp[tmp == 0] = fill_types['bone']
+    #             mask_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+    #             j - (mask_size // 2):j + 1 + (mask_size // 2)] = tmp
+    # mask_size = 15
+    # bone_hsv_values = [[0,40],[0,40], [65,100]]
+    # # map_edge_image_flatten = np.reshape(map_edge_image, (map_edge_image.shape[0] * map_edge_image.shape[1], 1))
+    # # map_edge_image_flatten = map_edge_image_flatten[map_edge_image_flatten != 0]
+    # global_avg = np.mean(map_edge_image)
+    # # global_med = np.median(map_edge_image_flatten)
+    # # global_std = np.std(map_edge_image)
+    # # with open('image_features.txt','a') as out_file:
+    # #     print(f'{curr_image_name}: Global average - {global_avg}', file=out_file)
+    # #     print(f'{curr_image_name}: Global median - {global_med}', file=out_file)
+    # for i in range(mask_size // 2, map_edge_image.shape[0] - mask_size // 2):
+    #     for j in range(mask_size // 2, map_edge_image.shape[1] - mask_size // 2):
+    #         act_mtx = map_edge_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+    #                   j - (mask_size // 2):j + 1 + (mask_size // 2)]
+    #         act_mtx = np.reshape(act_mtx, (mask_size * mask_size, 1))
+    #         #act_mtx = act_mtx[act_mtx != 0]
+    #         avg = np.mean(act_mtx)
+    #         hsv_mtx = segmented_hsv[i - (mask_size // 2):i + 1 + (mask_size // 2),
+    #                   j - (mask_size // 2):j + 1 + (mask_size // 2)]
+    #         channel_h_avg = np.average(hsv_mtx[:,:,0])
+    #         channel_s_avg = np.average(hsv_mtx[:, :, 1])
+    #         channel_v_avg = np.average(hsv_mtx[:, :, 2])
+    #         if bone_hsv_values[0][0] < channel_h_avg < bone_hsv_values[0][1] and\
+    #                 bone_hsv_values[1][0] < channel_s_avg < bone_hsv_values[1][1] and bone_hsv_values[2][0] < channel_v_avg < bone_hsv_values[2][1]:
+    #             tmp = mask_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+    #                   j - (mask_size // 2):j + 1 + (mask_size // 2)]
+    #             tmp[tmp == 0] = fill_types['bone']
+    #             mask_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+    #             j - (mask_size // 2):j + 1 + (mask_size // 2)] = tmp
 
 def store_evolution_in(lst):
     """Returns a callback function to store the evolution of the level sets in
@@ -278,6 +229,52 @@ def store_evolution_in(lst):
         lst.append(np.copy(x))
 
     return _store
+
+def measure_homogenity_of_area(image):
+    mask_size = 9
+    res_image = np.zeros_like(image)
+    for i in range(mask_size // 2, image.shape[0] - mask_size // 2, mask_size // 2):
+        for j in range(mask_size // 2, image.shape[1] - mask_size // 2, mask_size // 2):
+            act_mtx = image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+                      j - (mask_size // 2):j + 1 + (mask_size // 2)]
+            act_mtx = np.reshape(act_mtx, (mask_size * mask_size, 1))
+            act_mtx = sorted(act_mtx)
+            homogenity = np.average(act_mtx[(mask_size * mask_size) // 2:]) - np.average(act_mtx[:(mask_size * mask_size) // 2])
+            res_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+                      j - (mask_size // 2):j + 1 + (mask_size // 2)] = homogenity
+    plt.imsave('Homogenity images/' + curr_image_name, res_image)
+
+def fill_implant_areas():
+    # plt.imshow(mask_image)
+    # plt.show()
+    # plt.imshow(map_edge_image)
+    # plt.show()
+    # counts, bins = np.histogram(map_edge_image, bins = 100)
+    # counts_gray, bins_gray = np.histogram(gray_image, bins=100)
+    # plt.plot(bins[1:], counts, color='r')
+    # plt.show()
+    map_edge_image_flatten = np.reshape(map_edge_image, (map_edge_image.shape[0] * map_edge_image.shape[1], 1))
+    map_edge_image_flatten = map_edge_image_flatten[map_edge_image_flatten != 0]
+    global_avg = np.mean(map_edge_image_flatten)
+    global_std = np.std(map_edge_image_flatten)
+    mask_size = 25
+    for i in range(mask_size // 2, map_edge_image.shape[0] - mask_size // 2, 2):
+        for j in range(mask_size // 2, map_edge_image.shape[1] - mask_size // 2, 2):
+            act_mtx = map_edge_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+                      j - (mask_size // 2):j + 1 + (mask_size // 2)]
+            act_gray = gray_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+                      j - (mask_size // 2):j + 1 + (mask_size // 2)]
+            act_vec = np.reshape(act_mtx, (mask_size * mask_size, 1))
+            # act_gray_vec = np.reshape(act_gray, (mask_size * mask_size, 1))
+            # max_gray = np.where(counts_gray[1:] == np.max(counts_gray[1:]))
+            num_zeros = act_vec[act_vec < 0.0001].size
+            if (np.average(act_vec) < global_avg / 1.5 and np.mean(act_gray) > 0.5) or (i > 600 and i < 800):
+            #if np.mean(act_gray) > 0.65:
+                tmp = mask_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+                      j - (mask_size // 2):j + 1 + (mask_size // 2)]
+                tmp[(tmp == 0)] = fill_types['implant']
+                mask_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
+                j - (mask_size // 2):j + 1 + (mask_size // 2)] = tmp
 
 from os import listdir
 from os.path import isfile, join
@@ -534,118 +531,20 @@ sum_time = 0
 # BI = (B / A) * 100
 # print(f'Area pixels: {F}\nImplant pixels: {M}\nBone pixels: {B}\nA: {A}\nBI index: {BI}')
 
-#2. Process every image
-# for image_name in image_names:
-#     type = ''
-#     print(f'Processing {str(n)} of {str(len(image_names))} images. Image name: {image_name}')
-#     curr_image_name = image_name
-#     #image = img.imread('2020-11-02/115_2418_25_7_5x.jpg')
-#     start = time.time()
-#     rgb_image = img.imread('Implantatum-KA_images/' + image_name)
-#     hsv_image = color.rgb2hsv(rgb_image)
-#     # fig, ax = plt.subplots(1,3)
-#     # ax[0].imshow(hsv_image[:, :, 0])
-#     # ax[1].imshow(hsv_image[:, :, 1])
-#     # ax[2].imshow(hsv_image[:, :, 2])
-#     # plt.show()
-#     threshold = filters.threshold_mean(hsv_image[:,:,0])
-#     gray_image = hsv_image[:,:,2]
-#     gray_image[hsv_image[:,:,0] > threshold] = 0
-#     # plt.imshow(gray_image)
-#     # plt.show()
-#     # plt.imshow((gray_image_2 + gray_image) / 2)
-#     # plt.show()
-#
-#     image = (color.rgb2gray(rgb_image) * 255).astype(np.uint8)
-#     #edge_image = feature.canny(edge_image, sigma=1)
-#     edge_image = filters.sobel(gray_image)
-#     #edge_image = morphology.closing(edge_image, selem=morphology.square(5))
-#     # plt.imshow(edge_image)
-#     # plt.show()
-#     plt.imsave('Edge images/' + image_name, edge_image, cmap = 'gray')
-#     #edge_image = get_binary_image(edge_image)
-#     edge_image = get_binary_image_from_sobel(edge_image, mask_size=15, step_size=15)
-#     edge_image, boundary_coords = get_contour(edge_image)
-#     segmented_image = image
-#     #segmented_image[edge_image == 0] = 0
-#     segmented_image = segmented_image[boundary_coords[0]: boundary_coords[1], boundary_coords[2]: boundary_coords[3]]
-#     mask_size = 196
-#     bin_segmented_image = np.zeros_like(segmented_image)
-#             #bin_segmented_image[i:i + mask_size, j: j + mask_size] = temp_image
-#             # plt.imshow(cluster_image)
-#             # plt.show()
-#     # plt.imshow(bin_segmented_image)
-#     # plt.show()
-#     #segmented_image[edge_image == 0] = 0
-#     rgb_segmented_image = np.zeros_like(rgb_image)
-#     coords = np.where(edge_image != 0)
-#     for i in range(len(coords[0])):
-#         rgb_segmented_image[coords[0][i], coords[1][i]] = rgb_image[coords[0][i], coords[1][i]]
-#     rgb_segmented_image = rgb_segmented_image[boundary_coords[0]: boundary_coords[1], boundary_coords[2]: boundary_coords[3]]
-#     edge_image = edge_image[boundary_coords[0]: boundary_coords[1], boundary_coords[2]: boundary_coords[3]]
-#     # plt.imshow(rgb_segmented_image)
-#     # plt.show()
-#     # patch_n = 0
-#     # for i in range(0, rgb_segmented_image.shape[0], mask_size):
-#     #     for j in range(0, rgb_segmented_image.shape[1], mask_size):
-#     #         temp_image = rgb_segmented_image[i:i + mask_size, j: j + mask_size]
-#     #         if temp_image.shape[0] < mask_size or temp_image.shape[1] < mask_size:
-#     #             temp_zeros = np.zeros((mask_size, mask_size, 3))
-#     #             temp_zeros[:temp_image.shape[0], :temp_image.shape[1]] = temp_image
-#     #             temp_image = temp_zeros.astype(np.uint8)
-#     #         print(temp_image.shape)
-#     #         hsv_image = color.rgb2hsv(temp_image)
-#     #         # fig, ax = plt.subplots(1,3)
-#     #         # ax[0].imshow(hsv_image[:, :, 0])
-#     #         # ax[1].imshow(hsv_image[:, :, 1])
-#     #         # ax[2].imshow(hsv_image[:, :, 2])
-#     #         # plt.show()
-#     #         map_image = hsv_image[:, :, 2]
-#     #         map_image = smooth_map_image(map_image)
-#     #         patch_n += 1
-#     #         mask_image = np.zeros((temp_image.shape[0], temp_image.shape[1]))
-#     #         current_coords = [100,60]
-#     #         temp_edge_image = color.rgb2gray(filters.sobel(map_image))
-#     #         mask_image = snake_fill(mask_image, temp_edge_image, map_image, current_coords)
-#     #         fig, ax = plt.subplots(1,3)
-#     #         ax[0].imshow(map_image)
-#     #         ax[1].imshow(temp_edge_image)
-#     #         ax[2].imshow(mask_image)
-#     #         plt.show()
-#             # try:
-#             #     plt.imsave(f'Image patches/{image_name}/{image_name}patch_{i}-{j}.png', temp_image)
-#             # except:
-#             #     os.mkdir('Image patches/' + image_name)
-#             #     plt.imsave(f'Image patches/{image_name}/{image_name}patch_{i}-{j}.png', temp_image)
-#     # rgb_segmented_image = rgb_segmented_image[boundary_coords[0]: boundary_coords[1], boundary_coords[2]: boundary_coords[3]]
-#
-#     # plt.imshow(segmented_image)
-#     # plt.show()
-#     #get_implanted_area(rgb_segmented_image)
-#     # plt.show()
-#     #plt.imshow(edge_image)
-#     #image[edge_image == 0] //= 3
-#     plt.imsave('Segmented images/' + image_name, rgb_segmented_image)
-#     plt.imsave('Binary images/' + image_name, edge_image, cmap = 'gray')
-#     plt.clf()
-#     print('#' + str(n) + ' Binary image saved')
-#     end = time.time()
-#     print(f'Time: {end - start}')
-#     sum_time += end - start
-#     n += 1
-
 n = 1
 sum_time = 0
 
-for image_name in image_names:
-    type = ''
+for i in range(26,27):
+    image_name = image_names[i]
+    type = 'bone'
     print(f'Processing {str(n)} of {str(len(image_names))} images. Image name: {image_name}')
     curr_image_name = image_name
     # image = img.imread('2020-11-02/115_2418_25_7_5x.jpg')
     start = time.time()
-    rgb_segmented_image = img.imread('Segmented images/' + image_name)
+    rgb_segmented_image = np.array(img.imread('Segmented images/' + image_name))
     edge_image = color.rgb2gray(img.imread('Binary images/' + image_name))
     hsv_image = color.rgb2hsv(rgb_segmented_image)
+
     # fig, ax = plt.subplots(1,3)
     # ax[0].imshow(hsv_image[:,:,0])
     # ax[1].imshow(hsv_image[:,:,1])
@@ -660,17 +559,42 @@ for image_name in image_names:
     # ax[1].imshow(hsv_image[:,:,1])
     # ax[2].imshow(hsv_image[:,:,2])
     # plt.show()
-    gray_image = hsv_image[:,:,2]
-    map_edge_image = hsv_image[:,:,1]
+    #gray_image = hsv_image[:,:,2]
 
+    # clustered_red = get_cluster(16, rgb_segmented_image[:, :, 0])
+    # clustered_green = get_cluster(16, rgb_segmented_image[:, :, 1])
+    # clustered_blue = get_cluster(16, rgb_segmented_image[:, :, 2])
+    # rgb_segmented_image_for_chan_vese = np.copy(rgb_segmented_image)
+    # rgb_segmented_image[:, :, 0] = filters.gaussian(clustered_red, sigma = 2)
+    # rgb_segmented_image[:, :, 1] = filters.gaussian(clustered_green, sigma = 2)
+    # rgb_segmented_image[:, :, 2] = filters.gaussian(clustered_blue, sigma = 2)
+    gray_image = color.rgb2gray(rgb_segmented_image)
+    #gray_image = hsv_image[:,:,2]
+    #gray_image = filters.gaussian(gray_image, sigma = 2)
+    #gray_image = exposure.equalize_hist(gray_image)
+    plt.imsave('Gray images/' + curr_image_name, rgb_segmented_image)
 
+    # plt.imshow(rgb_segmented_image_b)
+    # plt.show()
+    #gray_image = (edge_image + gray_image) ** 2
+    counts, bins = np.histogram(gray_image, bins = 100)
+    plt.plot(bins[2:], counts[1:], color='r')
+    plt.savefig(f'RGB channels/{image_name}')
+    plt.clf()
+    #edge_image = filters.prewitt(gray_image)
+    gray_image = exposure.equalize_hist(gray_image)
+    edge_image = filters.sobel(gray_image)
+    #map_edge_image = edge_image ** 2
+    map_edge_image = (hsv_image[:, :, 1] + edge_image) / 2
+    plt.imsave('Gray images/' + curr_image_name, gray_image, cmap='gray')
+    plt.imsave(f'Edges of Segmented Images/{curr_image_name}', map_edge_image)
+    #gray_image = color.rgb2gray(rgb_segmented_image_for_chan_vese)
     #1/7. Create edges and thresholded image to separate different areas on the image
     # map_edge_image = morphological_chan_vese(gray_image, 35, init_level_set=init_ls, smoothing=3)
 
     #gray_image = exposure.adjust_log(gray_image, 0.5)
 
     #gray_image = skimage.transform.rescale(gray_image, 0.5, anti_aliasing=False)
-    gray_image = exposure.equalize_hist(gray_image)
 
     # cv = chan_vese(gray_image, mu=0.05, lambda1=3, lambda2=1, tol=1e-5, max_iter=200,
     #                dt=0.25, init_level_set="checkerboard", extended_output=True)
@@ -718,7 +642,7 @@ for image_name in image_names:
     #
     # plt.show()
 
-    ls = morphological_chan_vese(gray_image, 55, init_level_set='checkerboard', smoothing=2)
+    ls = morphological_chan_vese(gray_image, 60, init_level_set='checkerboard', smoothing=1)
 
     ssim_index = ssim(ls, edge_image)
     #print(ssim_index)
@@ -754,12 +678,22 @@ for image_name in image_names:
     ax[1].legend(loc="upper right")
     title = "Morphological ACWE evolution"
     ax[1].set_title(title, fontsize=12)
-
     plt.savefig(f'Chan Vese Figures/{image_name}')
     plt.clf()
 
     gray_image[ls == 1] = 0
+    #gray_image = exposure.equalize_hist(gray_image)
+    rgb_segmented_image_b = np.zeros_like(rgb_segmented_image)
+    coords = np.where(gray_image != 0)
+    for i in range(len(coords[0])):
+        rgb_segmented_image_b[coords[0][i], coords[1][i]] = rgb_segmented_image[coords[0][i], coords[1][i]]
+    segmented_hsv = (color.rgb2hsv(rgb_segmented_image_b) * 255).astype(np.uint8)
 
+    # fig, ax = plt.subplots(1, 3)
+    # ax[0].imshow(segmented_hsv[:,:,0])
+    # ax[1].imshow(segmented_hsv[:,:,1])
+    # ax[2].imshow(segmented_hsv[:,:,2])
+    # plt.show()
     # map_edge_ls = measure.find_contours(ls, 0.8)
     # plt.imshow(ls)
     # for contour in map_edge_ls:
@@ -774,29 +708,51 @@ for image_name in image_names:
     ls[edge_image == 0] = 0
     mask_image[ls == 1] = fill_types['other']
 
-    threshold = filters.threshold_mean(gray_image)
     gray_image_original = np.copy(gray_image)
-    gray_image[ls == 1] = 0
+
+    threshold = filters.threshold_mean(gray_image)
 
     map_image = (gray_image > threshold)
+    # counts_h, bins_h = np.histogram(map_edge_images, bins=256)
+    # max_h = np.where(counts_h[1:] == np.max(counts_h[1:]))
+    # max_h = max_h[0] / 256
+    # with open('image_features.txt','a') as out_file:
+    #     print(f'{curr_image_name}: Maximum value: {max_h}', file=out_file)
+    # if max_h < 0.075:
+    #     gray_image[np.abs(map_edge_images - max_h) > 0.1] = 0
+    # else:
+    #     gray_image[np.abs(map_edge_images - max_h) < 0.1] = 0
+    # fig, ax = plt.subplots(1,2)
+    # ax[0].plot(bins_h[2:], counts_h[1:], color='r')
+    # ax[1].imshow(gray_image)
+    # plt.savefig(f'Edges of Segmented Images/{curr_image_name}')
+    # plt.clf()
+    # plt.imshow(gray_image)
+    # plt.show()
     # fd, map_edge_image = feature.hog(gray_image, orientations=4, pixels_per_cell=(16, 16),
     #                      cells_per_block=(4, 4), visualize=True)
-    map_edge_images = filters.sobel(gray_image)
-    map_edge_image = (map_edge_images + map_edge_image) / 2
-    map_edge_image[gray_image == 0] = 0
+    # plt.imshow(map_edge_images)
+    # plt.show()
+    # fig, ax = plt.subplots(1,2)
+    # ax[0].imshow(map_edge_images, cmap='gray')
+    # counts, bins = np.histogram(map_edge_images, bins = 256)
+    # ax[1].plot(bins[2:], counts[1:], color='r')
+    # plt.show()
+    # plt.imshow(map_edge_image)
+    # plt.show()
+    #map_edge_image = map_edge_images
     # counts, bins = np.histogram(map_edge_image, bins=256)
     # fig, ax = plt.subplots(1,2)
     # ax[0].imshow(map_edge_image)
     # ax[1].bar(bins[1:], counts)
     # plt.show()
-    plt.imsave('Edges of Segmented Images/' + curr_image_name, map_edge_image)
     # plt.imshow(map_edge_image, cmap = 'gray')
     # plt.show()
     #map_edge_image[gray_image == 0] = 0
     #fill_small_holes()
-
-    # fig, ax = plt.subplots(1,4)
-    # #ax[0].imshow(gray_image_original, cmap='gray')
+    plt.clf()
+    #fig, ax = plt.subplots(1,4)
+    #ax[0].imshow(gray_image_original, cmap='gray')
     # ax[0].imshow(gray_image_original, cmap='gray')
     # ax[1].imshow(gray_image, cmap='gray')
     # ax[2].imshow(map_image, cmap='gray')
@@ -804,47 +760,61 @@ for image_name in image_names:
     # plt.show()
     # plt.imshow(mask_image)
     # plt.show()
-
-    fill_bone_regions()
+    segmented_rgb = rgb_segmented_image_b
+    if type == 'implant':
+        fill_implant_areas()
+        mask_image[mask_image == 0] = fill_types['bone']
+    else:
+        fill_bone_regions()
+        mask_image[mask_image == 0] = fill_types['implant']
 
     # plt.imshow(mask_image)
     # plt.show()
 
-    rgb_segmented_image_b = np.zeros_like(rgb_segmented_image)
-    coords = np.where(gray_image != 0)
-    for i in range(len(coords[0])):
-        rgb_segmented_image_b[coords[0][i], coords[1][i]] = rgb_segmented_image[coords[0][i], coords[1][i]]
-
     # plt.imshow(rgb_segmented_image_b)
-    plt.imsave('Gray images/' + curr_image_name, rgb_segmented_image_b)
-    plt.imsave('RGB of Segmented Images/' + curr_image_name + '_channel1.jpg', rgb_segmented_image_b[:,:,0])
-    plt.imsave('RGB of Segmented Images/' + curr_image_name + '_channel2.jpg', rgb_segmented_image_b[:, :, 1])
-    plt.imsave('RGB of Segmented Images/' + curr_image_name + '_channel3.jpg', rgb_segmented_image_b[:, :, 2])
-    counts_red, bins_red = np.histogram(rgb_segmented_image_b[:,:,0], bins = 256)
-    counts_green, bins_green = np.histogram(rgb_segmented_image_b[:, :, 1], bins=256)
-    counts_blue, bins_blue = np.histogram(rgb_segmented_image_b[:, :, 2], bins=256)
 
-    plt.plot(bins_red[2:], counts_red[1:], color='r')
-    plt.plot(bins_green[2:], counts_green[1:], color='g')
-    plt.plot(bins_blue[2:], counts_blue[1:], color='b')
-    plt.savefig(f'RGB channels/{image_name}')
-    plt.clf()
-    hsv_segmented_image = color.rgb2hsv(rgb_segmented_image_b)
-    plt.imsave('HSV of Segmented Images/' + curr_image_name + '_channel1.jpg', hsv_segmented_image[:, :, 0])
-    plt.imsave('HSV of Segmented Images/' + curr_image_name + '_channel2.jpg', hsv_segmented_image[:, :, 1])
-    plt.imsave('HSV of Segmented Images/' + curr_image_name + '_channel3.jpg', hsv_segmented_image[:, :, 2])
+    # plt.imsave('RGB of Segmented Images/' + curr_image_name + '_channel1.jpg', rgb_segmented_image_b[:,:,0])
+    # plt.imsave('RGB of Segmented Images/' + curr_image_name + '_channel2.jpg', rgb_segmented_image_b[:, :, 1])
+    # plt.imsave('RGB of Segmented Images/' + curr_image_name + '_channel3.jpg', rgb_segmented_image_b[:, :, 2])
+    # counts_red, bins_red = np.histogram(rgb_segmented_image_b[:,:,0], bins = 256)
+    # max_red = np.where(counts_red[1:] == np.max(counts_red[1:]))
+    # counts_green, bins_green = np.histogram(rgb_segmented_image_b[:, :, 1], bins=256)
+    # max_green = np.where(counts_green[1:] == np.max(counts_green[1:]))
+    # counts_blue, bins_blue = np.histogram(rgb_segmented_image_b[:, :, 2], bins=256)
+    # max_blue = np.where(counts_blue[1:] == np.max(counts_blue[1:]))
+    # r_channel = rgb_segmented_image_b[:,:,0]
+    # r_channel[np.abs(r_channel - max_red) < 25] = 0
+    # g_channel = rgb_segmented_image_b[:, :, 1]
+    # g_channel[np.abs(r_channel - max_green) < 25] = 0
+    # b_channel = rgb_segmented_image_b[:, :, 2]
+    # b_channel[np.abs(r_channel - max_blue) < 25] = 0
+    # rgb_segmented_image_b[:,:,0] = r_channel
+    # rgb_segmented_image_b[:,:,1] = g_channel
+    # rgb_segmented_image_b[:,:,2] = b_channel
+    #
+    #
+    # plt.plot(bins_red[2:], counts_red[1:], color='r')
+    # plt.plot(bins_green[2:], counts_green[1:], color='g')
+    # plt.plot(bins_blue[2:], counts_blue[1:], color='b')
+    # plt.savefig(f'RGB channels/{image_name}')
+    # plt.clf()
+    # hsv_segmented_image = color.rgb2hsv(rgb_segmented_image_b)
+    # plt.imshow(hsv_segmented_image[:,:,1] * hsv_segmented_image[:,:,2])
+    # plt.show()
+    # plt.imsave('HSV of Segmented Images/' + curr_image_name + '_channel1.jpg', hsv_segmented_image[:, :, 0])
+    # plt.imsave('HSV of Segmented Images/' + curr_image_name + '_channel2.jpg', hsv_segmented_image[:, :, 1])
+    # plt.imsave('HSV of Segmented Images/' + curr_image_name + '_channel3.jpg', hsv_segmented_image[:, :, 2])
+    #
+    # counts_h, bins_h = np.histogram(hsv_segmented_image[:, :, 0], bins=256)
+    # counts_s, bins_s = np.histogram(hsv_segmented_image[:, :, 1], bins=256)
+    # counts_v, bins_v = np.histogram(hsv_segmented_image[:, :, 2], bins=256)
+    #
+    # plt.plot(bins_h[10:], counts_h[9:], color='r')
+    # plt.plot(bins_s[10:], counts_s[9:], color='g')
+    # plt.plot(bins_v[10:], counts_v[9:], color='b')
+    # plt.savefig(f'HSV channels/{image_name}')
+    # plt.clf()
 
-    counts_h, bins_h = np.histogram(hsv_segmented_image[:, :, 0], bins=256)
-    counts_s, bins_s = np.histogram(hsv_segmented_image[:, :, 1], bins=256)
-    counts_v, bins_v = np.histogram(hsv_segmented_image[:, :, 2], bins=256)
-
-    plt.plot(bins_h[10:], counts_h[9:], color='r')
-    plt.plot(bins_s[10:], counts_s[9:], color='g')
-    plt.plot(bins_v[10:], counts_v[9:], color='b')
-    plt.savefig(f'HSV channels/{image_name}')
-    plt.clf()
-
-    mask_image[mask_image == 0] = fill_types['implant']
     # plt.imshow(mask_image)
     # plt.show()
     for key in fill_types_rgb.keys():
@@ -862,7 +832,7 @@ for image_name in image_names:
     with open("bi_indices.txt",'a') as out_file:
         print(f'{image_name}: {BI}%', file=out_file)
     plt.imshow(rgb_segmented_image)
-    plt.imshow(mask_image_rgb, cmap = 'jet', alpha = 0.35)
+    plt.imshow(mask_image_rgb, cmap = 'jet', alpha = 0.25)
     plt.savefig(f'Labelled images/{image_name}')
     plt.clf()
     print('#' + str(n) + ' Binary image saved')
