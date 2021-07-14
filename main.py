@@ -153,9 +153,12 @@ def fill_bone_regions():
     map_flatten = map_flatten[map_flatten != 0]
     global_avg = np.mean(map_flatten)
     global_std = np.std(map_edge_image)
+    gray_flatten = np.reshape(gray_image, (gray_image.shape[0] * gray_image.shape[1], 1))
+    gray_flatten = gray_flatten[gray_flatten != 0]
+    gray_mean = np.mean(gray_flatten)
     # plt.imshow(gray_image)
     # plt.show()
-    mask_size = 25
+    mask_size = 17
     for i in range(mask_size // 2, map_edge_image.shape[0] - mask_size // 2,2):
         for j in range(mask_size // 2, map_edge_image.shape[1] - mask_size // 2,2):
             act_mtx = map_edge_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
@@ -165,8 +168,8 @@ def fill_bone_regions():
                       j - (mask_size // 2):j + 1 + (mask_size // 2)]
             act_mtx = act_mtx[act_mtx != 0]
             avg = np.mean(act_mtx)
-            if (avg < 0.015 or avg > 0.35):
-            #if np.mean(act_gray) > 0.875:
+            if (avg < 0.675) and (np.mean(act_gray) > 0.89 or np.mean(act_gray) < 0.7) and (j < 600 or j > 850 or i > 400):
+                #if np.mean(act_gray) > 0.875  and (np.mean(act_gray) > 0.865 or np.mean(act_gray) < 0.675):
                 tmp = mask_image[i - (mask_size // 2):i + 1 + (mask_size // 2),
                       j - (mask_size // 2):j + 1 + (mask_size // 2)]
                 tmp[tmp == 0] = fill_types['bone']
@@ -534,7 +537,7 @@ sum_time = 0
 n = 1
 sum_time = 0
 
-for i in range(26,27):
+for i in range(39,40):
     image_name = image_names[i]
     type = 'bone'
     print(f'Processing {str(n)} of {str(len(image_names))} images. Image name: {image_name}')
@@ -582,12 +585,13 @@ for i in range(26,27):
     plt.savefig(f'RGB channels/{image_name}')
     plt.clf()
     #edge_image = filters.prewitt(gray_image)
-    gray_image = exposure.equalize_hist(gray_image)
-    edge_image = filters.sobel(gray_image)
+    edge_image = filters.roberts(gray_image)
     #map_edge_image = edge_image ** 2
-    map_edge_image = (hsv_image[:, :, 1] + edge_image) / 2
-    plt.imsave('Gray images/' + curr_image_name, gray_image, cmap='gray')
-    plt.imsave(f'Edges of Segmented Images/{curr_image_name}', map_edge_image)
+    map_edge_image = exposure.equalize_hist(edge_image)
+    # plt.imshow(map_edge_image)
+    # plt.show()
+    #map_edge_image = (hsv_image[:, :, 1] + edge_image) / 2
+    gray_image = exposure.equalize_hist(gray_image)
     #gray_image = color.rgb2gray(rgb_segmented_image_for_chan_vese)
     #1/7. Create edges and thresholded image to separate different areas on the image
     # map_edge_image = morphological_chan_vese(gray_image, 35, init_level_set=init_ls, smoothing=3)
@@ -682,7 +686,11 @@ for i in range(26,27):
     plt.clf()
 
     gray_image[ls == 1] = 0
-    #gray_image = exposure.equalize_hist(gray_image)
+    map_edge_image[ls == 1] = 0
+    map_edge_image = exposure.equalize_hist(map_edge_image)
+    gray_image = exposure.equalize_hist(gray_image)
+    plt.imsave('Gray images/' + curr_image_name, gray_image, cmap='gray')
+    plt.imsave(f'Edges of Segmented Images/{curr_image_name}', map_edge_image)
     rgb_segmented_image_b = np.zeros_like(rgb_segmented_image)
     coords = np.where(gray_image != 0)
     for i in range(len(coords[0])):
